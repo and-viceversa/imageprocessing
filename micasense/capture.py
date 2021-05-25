@@ -29,6 +29,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 import math
 import os
+import warnings
 
 import cv2
 import imageio
@@ -38,6 +39,8 @@ import micasense.image as image
 import micasense.imageutils as imageutils
 import micasense.plotutils as plotutils
 
+warnings.simplefilter(action="once")
+
 
 class Capture(object):
     """
@@ -46,6 +49,7 @@ class Capture(object):
     found in the same folder and also share the same filename prefix, such
     as IMG_0000_*.tif, but this is not required.
     """
+
     def __init__(self, images, panel_corners=None):
         """
         :param images: str or List of str system file paths.
@@ -526,7 +530,7 @@ class Capture(object):
                                    options=['INTERLEAVE=BAND', 'COMPRESS=DEFLATE', f'PHOTOMETRIC={photometric}'])
         try:
             if out_raster is None:
-                raise IOError("could not load gdal GeoTiff driver")
+                raise IOError("Could not load GDAL GeoTiff driver.")
 
             if sort_by_wavelength:
                 eo_list = list(np.argsort(np.array(self.center_wavelengths())[self.eo_indices()]))
@@ -552,37 +556,68 @@ class Capture(object):
         finally:
             out_raster = None
 
-    def save_bands_in_separate_file(self, outfilename, sort_by_wavelength=False,photometric='MINISBLACK'):
-        from osgeo.gdal import GetDriverByName, GDT_UInt16
+
+
+=======
+    def save_capture_as_bands(self, out_file_name, out_data_type='GDT_UInt16', photometric='MINISBLACK'):
+        """
+        Output the Images in the Capture object as separate GTiffs.
+        :param out_file_name: str system file path without file extension
+        :param out_data_type: str GDT_Float32 or GDT_UInt16
+            Default: GDT_UInt16 will write images as scaled reflectance values. EO (32769=100%)
+            and LWIR in centi-Kelvin (0-65535).
+            GDT_Float32 will write images as floating point reflectance values. EO (1.0=100%)
+            and LWIR in floating point Celsius.
+            https://gdal.org/api/raster_c_api.html#_CPPv412GDALDataType
+        :param photometric: str GDAL argument for GTiff color matching
+        :return: None
+        """
+        from osgeo.gdal import GetDriverByName, GDT_UInt16, GDT_Float32
         if self.__aligned_capture is None:
-            raise RuntimeError("call Capture.create_aligned_capture prior to saving as stack")
+            raise RuntimeError("Call Capture.create_aligned_capture() prior to saving as stack.")
+
+        # handle incorrect datatype. default to GDT_UInt16.
+        if out_data_type.strip() == 'GDT_UInt16':
+            gdal_type = GDT_UInt16
+        elif out_data_type.strip() == 'GDT_Float32':
+            gdal_type = GDT_Float32
+        else:
+            warnings.warn(message='Output data type in Capture.save_capture_as_bands() was called as {}. '
+                                  'Must use "GDT_UInt16" or "GDT_Float32". Defaulting to GDT_UInt16...'
+                          .format(out_data_type),
+                          category=UserWarning)
+            gdal_type = GDT_UInt16
+
+        # predictably handle accidental .tif.tif values
+        if out_file_name.endswith('.tif'):
+            out_file_path = out_file_name[:-4]
+        else:
+            out_file_path = out_file_name
+
         rows, cols, bands = self.__aligned_capture.shape
-        driver = GetDriverByName('GTiff')      
-        
-        for i in range(0,5):
-            band_number = str(i+1)
-            outRaster = driver.Create(outfilename+'_'+band_number+'.tif', cols, rows, 1, GDT_UInt16, 
-                                  options = [ 'INTERLEAVE=BAND','COMPRESS=DEFLATE',f'PHOTOMETRIC={photometric}'])
-            outband = outRaster.GetRasterBand(1)
-            outdata = self.__aligned_capture[:,:,i]
-            outdata = outdata*32768
-            outdata[outdata<0] = 0
-            outdata[outdata>65535] = 65535
-            outband.WriteArray(outdata) 
-            outband.FlushCache()
-            outRaster = None
+        driver = GetDriverByName('GTiff')
 
-        if bands == 6:
-            thermalRaster = driver.Create(outfilename+'_6.tif', cols, rows, 1, GDT_UInt16, 
-                                    options = [ 'INTERLEAVE=BAND','COMPRESS=DEFLATE',f'PHOTOMETRIC={photometric}'])
-            outband = thermalRaster.GetRasterBand(1)
-            outdata = (self.__aligned_capture[:,:,5]) * 100 
-            outdata[outdata<0] = 0
-            outdata[outdata>65535] = 65535
-            outband.WriteArray(outdata)
-            outband.FlushCache()
-            thermalRaster = None   
+        for i in self.eo_indices():
+            out_raster = driver.Create(out_file_path + f'_{i + 1}.tif', cols, rows, 1, gdal_type,
+                                       options=['INTERLEAVE=BAND', 'COMPRESS=DEFLATE', f'PHOTOMETRIC={photometric}'])
+            out_band = out_raster.GetRasterBand(1)
+            out_data = self.__aligned_capture[:, :, i]
+            out_data[out_data < 0] = 0
+            out_data[out_data > 2] = 2  # limit reflectance data to 200% to allow some specular reflections
+            # if GDT_UInt16, scale reflectance images so 100% = 32768. GDT_UInt16 resolves to 2.
+            out_band.WriteArray(out_data * 32768 if gdal_type == 2 else out_data)
+            out_band.FlushCache()
 
+        for i in self.lw_indices():
+            out_raster = driver.Create(out_file_path + f'_{i + 1}.tif', cols, rows, 1, gdal_type,
+                                       options=['INTERLEAVE=BAND', 'COMPRESS=DEFLATE', f'PHOTOMETRIC={photometric}'])
+            out_band = out_raster.GetRasterBand(1)
+            # if GDT_UInt16, scale data from float degC to back to centi-Kelvin to fit into UInt16.
+            out_data = (self.__aligned_capture[:, :, i] + 273.15) * 100 if gdal_type == 2 \
+                else self.__aligned_capture[:, :, i]
+            out_band.WriteArray(out_data)
+            out_band.FlushCache()
+>>>>>>> e663365 (Add Capture.save_capture_as_bands method)
 
     def save_capture_as_rgb(self, out_file_name, gamma=1.4, downsample=1, white_balance='norm', hist_min_percent=0.5,
                             hist_max_percent=99.5, sharpen=True, rgb_band_indices=(2, 1, 0)):
