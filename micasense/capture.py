@@ -556,9 +556,6 @@ class Capture(object):
         finally:
             out_raster = None
 
-
-
-=======
     def save_capture_as_bands(self, out_file_name, out_data_type='GDT_UInt16', photometric='MINISBLACK'):
         """
         Output the Images in the Capture object as separate GTiffs.
@@ -617,7 +614,6 @@ class Capture(object):
                 else self.__aligned_capture[:, :, i]
             out_band.WriteArray(out_data)
             out_band.FlushCache()
->>>>>>> e663365 (Add Capture.save_capture_as_bands method)
 
     def save_capture_as_rgb(self, out_file_name, gamma=1.4, downsample=1, white_balance='norm', hist_min_percent=0.5,
                             hist_max_percent=99.5, sharpen=True, rgb_band_indices=(2, 1, 0)):
