@@ -2,15 +2,19 @@
 # coding: utf-8
 """
 MicaSense Image Processing Utilities
+
 Copyright 2017 MicaSense, Inc.
+
 Permission is hereby granted, free of charge, to any person obtaining a copy of
 this software and associated documentation files (the "Software"), to deal in the
 Software without restriction, including without limitation the rights to use,
 copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the
 Software, and to permit persons to whom the Software is furnished to do so,
 subject to the following conditions:
+
 The above copyright notice and this permission notice shall be included in all
 copies or substantial portions of the Software.
+
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
 FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
@@ -23,11 +27,25 @@ import cv2
 import numpy as np
 
 
-def raw_image_to_radiance(meta, imageRaw):
+def dd_2_dms(dd):
+    """
+    Convert decimal degrees to degrees minutes seconds.
+    :param dd: float decimal degree value
+    :return: degrees, minutes, seconds
+    """
+    is_positive = (dd >= 0)
+    dd = abs(dd)
+    minutes, seconds = divmod(dd * 3600, 60)
+    degrees, minutes = divmod(minutes, 60)
+    degrees = degrees if is_positive else -degrees
+    return degrees, minutes, seconds
+
+
+def raw_image_to_radiance(meta, image_raw):
     # get image dimensions
-    imageRaw = imageRaw.T
-    xDim = imageRaw.shape[0]
-    yDim = imageRaw.shape[1]
+    image_raw = image_raw.T
+    x_dim = image_raw.shape[0]
+    y_dim = image_raw.shape[1]
 
     #  get radiometric calibration factors
 
@@ -40,25 +58,25 @@ def raw_image_to_radiance(meta, imageRaw):
     # get dark current pixel values
     # get number of stored values
     black_levels = [float(val) for val in meta.get_item('EXIF:BlackLevel').split(' ')]
-    blackLevel = np.array(black_levels)
-    darkLevel = blackLevel.mean()
+    black_level = np.array(black_levels)
+    dark_level = black_level.mean()
 
     # get exposure time & gain (gain = ISO/100)
-    exposureTime = float(meta.get_item('EXIF:ExposureTime'))
+    exposure_time = float(meta.get_item('EXIF:ExposureTime'))
     gain = float(meta.get_item('EXIF:ISOSpeed')) / 100.0
 
     # apply image correction methods to raw image
     # step 1 - row gradient correction, vignette & radiometric calibration:
     # compute the vignette map image
-    V, x, y = vignette_map(meta, xDim, yDim)
+    v, x, y = vignette_map(meta, x_dim, y_dim)
 
     # row gradient correction
-    R = 1.0 / (1.0 + a2 * y / exposureTime - a3 * y)
+    r = 1.0 / (1.0 + a2 * y / exposure_time - a3 * y)
 
     # subtract the dark level and adjust for vignette and row gradient
-    L = V * R * (imageRaw - darkLevel)
+    L = v * r * (image_raw - dark_level)
 
-    # Floor any negative radiances to zero (can happend due to noise around blackLevel)
+    # Floor any negative radiances to zero (can happen due to noise around black_level)
     L[L < 0] = 0
 
     # L = np.round(L).astype(np.uint16)
@@ -69,11 +87,11 @@ def raw_image_to_radiance(meta, imageRaw):
     # because coefficients are scaled to work with input values of max 1.0
     bitsPerPixel = meta.get_item('EXIF:BitsPerSample')
     bitDepthMax = float(2 ** bitsPerPixel)
-    radianceImage = L.astype(float) / (gain * exposureTime) * a1 / bitDepthMax
+    radianceImage = L.astype(float) / (gain * exposure_time) * a1 / bitDepthMax
 
     # return both the radiance compensated image and the DN corrected image, for the
     # sake of the tutorial and visualization
-    return radianceImage.T, L.T, V.T, R.T
+    return radianceImage.T, L.T, v.T, r.T
 
 
 def vignette_map(meta, xDim, yDim):
@@ -165,5 +183,5 @@ def correct_lens_distortion(meta, image):
                                              (w, h),
                                              cv2.CV_32F)  # cv2.CV_32F for 32 bit floats
     # compute the undistorted 16 bit image
-    undistortedImage = cv2.remap(image, map1, map2, cv2.INTER_LINEAR)
-    return undistortedImage
+    undistorted_image = cv2.remap(image, map1, map2, cv2.INTER_LINEAR)
+    return undistorted_image

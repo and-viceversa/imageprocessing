@@ -22,53 +22,54 @@ COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
 IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 """
-# Support strings in Python 2 and 3
-from __future__ import unicode_literals
+
+import math
+import os
+from datetime import datetime, timedelta
 
 import exiftool
-from datetime import datetime, timedelta
 import pytz
-import os
-import math
+
 
 class Metadata(object):
-    ''' Container for Micasense image metadata'''
-    def __init__(self, filename, exiftoolPath=None, exiftool_obj=None):
-        if exiftool_obj is not None:
-            self.exif = exiftool_obj.get_metadata(filename)
-            return
-        if exiftoolPath is not None:
-            self.exiftoolPath = exiftoolPath
-        elif os.environ.get('exiftoolpath') is not None:
-            self.exiftoolPath = os.path.normpath(os.environ.get('exiftoolpath'))
+    """Container for MicaSense Image metadata."""
+
+    def __init__(self, file_path, exiftool_obj=None):
+        if not os.path.isfile(file_path):
+            raise IOError("Provided path is not a file: {}".format(file_path))
+
+        # assume Exiftool is in PATH
+        if isinstance(exiftool_obj, exiftool.ExifTool):
+            self.exif = exiftool_obj.get_metadata(file_path)
         else:
-            self.exiftoolPath = None
-        if not os.path.isfile(filename):
-            raise IOError("Input path is not a file")
-        with exiftool.ExifTool(self.exiftoolPath) as exift:
-            self.exif = exift.get_metadata(filename)
+            with exiftool.ExifTool() as exift:
+                self.exif = exift.get_metadata(file_path)
 
     def get_all(self):
-        ''' Get all extracted metadata items '''
+        """
+        Get all extracted metadata values.
+        :return: dict {str:<Any>} of all Image exif tags
+        """
         return self.exif
 
     def get_item(self, item, index=None):
-        ''' Get metadata item by Namespace:Parameter'''
+        """
+        Get metadata item by Tag:Parameter.
+        :param item: str metadata item name.
+                    e.g. XMP:VignettingPolynomial
+        :param index: int positional index for items with multiple values.
+                    e.g. XMP:RigRelatives -0.020453, 0.066033, -0.063915
+        :return: value at metadata Tag:Parameter. Else None if value not found.
+        """
         val = None
         try:
             val = self.exif[item]
             if index is not None:
-                try:
-                    if isinstance(val, unicode):
-                        val = val.encode('ascii','ignore')
-                except NameError:
-                    #throws on python 3 where unicode is undefined
-                    pass
-                if isinstance(val,str) and len(val.split(',')) > 1:
+                if isinstance(val, str) and len(val.split(',')) > 1:
                     val = val.split(',')
                 val = val[index]
         except KeyError:
-            #print ("Item "+item+" not found")
+            # print("Item {} not found.".format(item))
             pass
         except IndexError:
             print("Item {0} is length {1}, index {2} is outside this range.".format(
@@ -78,15 +79,14 @@ class Metadata(object):
         return val
 
     def size(self, item):
-        '''get the size (length) of a metadata item'''
+        """
+        Get the size (length) of a metadata item.
+        :param item: str metadata item name.
+                    e.g. XMP:VignettingPolynomial
+        :return: int len() of the item. Return 0 if val is None.
+        """
         val = self.get_item(item)
-        try:
-            if isinstance(val, unicode):
-                val = val.encode('ascii','ignore')
-        except NameError:
-            #throws on python 3 where unicode is undefined
-            pass
-        if isinstance(val,str) and len(val.split(',')) > 1:
+        if isinstance(val, str) and len(val.split(',')) > 1:
             val = val.split(',')
         if val is not None:
             return len(val)
@@ -94,34 +94,53 @@ class Metadata(object):
             return 0
 
     def print_all(self):
+        """Print all metadata Tag:Value."""
         for item in self.get_all():
             print("{}: {}".format(item, self.get_item(item)))
 
     def dls_present(self):
+        """
+        Determine if DLS was used during image capture.
+        :return: bool True if DLS metadata exists, else False.
+        """
         return self.get_item("XMP:Irradiance") is not None \
                or self.get_item("XMP:HorizontalIrradiance") is not None \
                or self.get_item("XMP:DirectIrradiance") is not None
 
     def supports_radiometric_calibration(self):
-        if(self.get_item('XMP:RadiometricCalibration')) is None:
+        """
+        Determine if metadata supports radiometric calibration.
+        :return: bool
+        """
+        if (self.get_item('XMP:RadiometricCalibration')) is None:
             return False
         return True
 
+    def radiometric_cal(self):
+        nelem = self.size('XMP:RadiometricCalibration')
+        return [float(self.get_item('XMP:RadiometricCalibration', i)) for i in range(nelem)]
+
     def position(self):
-        '''get the WGS-84 latitude, longitude tuple as signed decimal degrees'''
+        """
+        Get the WGS-84 (latitude, longitude, altitude) tuple as signed decimal degrees.
+        :return: tuple (lat, lon, alt)
+        """
+
         lat = self.get_item('EXIF:GPSLatitude')
         latref = self.get_item('EXIF:GPSLatitudeRef')
-        if latref=='S':
+        if latref == 'S':
             lat *= -1.0
+
         lon = self.get_item('EXIF:GPSLongitude')
         lonref = self.get_item('EXIF:GPSLongitudeRef')
-        if lonref=='W':
+        if lonref == 'W':
             lon *= -1.0
+
         alt = self.get_item('EXIF:GPSAltitude')
         return lat, lon, alt
 
     def utc_time(self):
-        ''' Get the timezone-aware datetime of the image capture '''
+        """Get the timezone-aware datetime of the image capture."""
         str_time = self.get_item('EXIF:DateTimeOriginal')
         utc_time = datetime.strptime(str_time, "%Y:%m:%d %H:%M:%S")
         subsec = int(self.get_item('EXIF:SubSecTime'))
@@ -132,22 +151,23 @@ class Metadata(object):
         subsec = float('0.{}'.format(int(subsec)))
         subsec *= negative
         ms = subsec * 1e3
-        utc_time += timedelta(milliseconds = ms)
+        utc_time += timedelta(milliseconds=ms)
         timezone = pytz.timezone('UTC')
         utc_time = timezone.localize(utc_time)
         return utc_time
 
     def dls_pose(self):
-        ''' get DLS pose as local earth-fixed yaw, pitch, roll in radians '''
+        """Get DLS pose as local earth-fixed yaw, pitch, roll in radians."""
         if self.get_item('XMP:Yaw') is not None:
-            yaw = float(self.get_item('XMP:Yaw')) # should be XMP.DLS.Yaw, but exiftool doesn't expose it that way
-            pitch = float(self.get_item('XMP:Pitch'))
-            roll = float(self.get_item('XMP:Roll'))
+            return float(self.get_item('XMP:Yaw')), float(self.get_item('XMP:Pitch')), float(self.get_item('XMP:Roll'))
         else:
-            yaw = pitch = roll = 0.0
-        return yaw, pitch, roll
+            return 0.0, 0.0, 0.0  # if metadata doesn't exist, return 0.0 for all
 
     def rig_relatives(self):
+        """
+        Get Rig Relatives data if present.
+        :return: list of Rig Relatives values. None if not present
+        """
         if self.get_item('XMP:RigRelatives') is not None:
             nelem = self.size('XMP:RigRelatives')
             return [float(self.get_item('XMP:RigRelatives', i)) for i in range(nelem)]
@@ -155,102 +175,104 @@ class Metadata(object):
             return None
 
     def capture_id(self):
+        """Get CaptureId."""
         return self.get_item('XMP:CaptureId')
 
     def flight_id(self):
+        """Get FlightId."""
         return self.get_item('XMP:FlightId')
 
     def camera_make(self):
+        """Get camera make."""
         return self.get_item('EXIF:Make')
 
     def camera_model(self):
+        """Get camera model."""
         return self.get_item('EXIF:Model')
 
     def firmware_version(self):
+        """Get firmware version."""
         return self.get_item('EXIF:Software')
 
     def band_name(self):
+        """Get BandName."""
         return self.get_item('XMP:BandName')
 
     def band_index(self):
+        """Get band index."""
         return self.get_item('XMP:RigCameraIndex')
 
     def exposure(self):
+        """Get exposure time."""
         exp = self.get_item('EXIF:ExposureTime')
         # correct for incorrect exposure in some legacy RedEdge firmware versions
         if self.camera_model() != "Altum":
-            if math.fabs(exp-(1.0/6329.0)) < 1e-6: 
+            if math.fabs(exp - (1.0 / 6329.0)) < 1e-6:
                 exp = 0.000274
         return exp
 
     def gain(self):
-        return self.get_item('EXIF:ISOSpeed')/100.0
+        """Get gain as ISOSpeed / 100.0."""
+        return self.get_item('EXIF:ISOSpeed') / 100.0
 
     def image_size(self):
+        """Get ImageWidth, ImageHeight."""
         return self.get_item('EXIF:ImageWidth'), self.get_item('EXIF:ImageHeight')
 
     def center_wavelength(self):
+        """Get center wavelength."""
         return self.get_item('XMP:CentralWavelength')
 
     def bandwidth(self):
+        """Get bandwidth as Full Width at Half Maximum."""
         return self.get_item('XMP:WavelengthFWHM')
 
-    def radiometric_cal(self):
-        nelem = self.size('XMP:RadiometricCalibration')
-        return [float(self.get_item('XMP:RadiometricCalibration', i)) for i in range(nelem)]
-
     def black_level(self):
+        """Get average black level value as float. Else 0 if black levels don't exist in metadata."""
         if self.get_item('EXIF:BlackLevel') is None:
             return 0
-        black_lvl = self.get_item('EXIF:BlackLevel').split(' ')
-        total = 0.0
-        num = len(black_lvl)
-        for pixel in black_lvl:
-            total += float(pixel)
-        return total/float(num)
+        black_lvls = [float(pixel) for pixel in self.get_item('EXIF:BlackLevel').split(' ')]
+        return math.fsum(black_lvls) / float(len(black_lvls))
 
     def dark_pixels(self):
-        ''' get the average of the optically covered pixel values
-        Note: these pixels are raw, and have not been radiometrically
-              corrected. Use the black_level() method for all
-              radiomentric calibrations '''
-        dark_pixels = self.get_item('XMP:DarkRowValue')
-        total = 0.0
-        num = len(dark_pixels)
-        for pixel in dark_pixels:
-            total += float(pixel)
-        return total/float(num)
+        """Get the average of the optically covered pixel values.
+        Note: these pixels are raw, and have not been radiometrically corrected.
+        Use the black_level() method for all radiometric calibrations."""
+        dark_pixels = [float(pixel) for pixel in self.get_item('XMP:DarkRowValue')]
+        return math.fsum(dark_pixels) / float(len(dark_pixels))
 
     def bits_per_pixel(self):
-        ''' get the number of bits per pixel, which defines the maximum digital number value in the image '''
+        """Get the number of bits per pixel, which defines the maximum digital number value in the image."""
         return self.get_item('EXIF:BitsPerSample')
 
     def vignette_center(self):
-        ''' get the vignette center in X and Y image coordinates'''
+        """Get the vignette center in X and Y image coordinates."""
         nelem = self.size('XMP:VignettingCenter')
         return [float(self.get_item('XMP:VignettingCenter', i)) for i in range(nelem)]
 
     def vignette_polynomial(self):
-        ''' get the radial vignette polynomial in the order it's defined in the metadata'''
+        """Get the radial vignette polynomial in the order it's defined in the metadata."""
         nelem = self.size('XMP:VignettingPolynomial')
         return [float(self.get_item('XMP:VignettingPolynomial', i)) for i in range(nelem)]
 
     def distortion_parameters(self):
+        """Get list of distortion parameters."""
         nelem = self.size('XMP:PerspectiveDistortion')
         return [float(self.get_item('XMP:PerspectiveDistortion', i)) for i in range(nelem)]
 
     def principal_point(self):
+        """Get list of principal point coordinates (cx, cy) in millimeters."""
         return [float(item) for item in self.get_item('XMP:PrincipalPoint').split(',')]
 
     def focal_plane_resolution_px_per_mm(self):
+        """Get focal plane X resolution and focal plane Y resolution."""
         fp_x_resolution = float(self.get_item('EXIF:FocalPlaneXResolution'))
         fp_y_resolution = float(self.get_item('EXIF:FocalPlaneYResolution'))
         return fp_x_resolution, fp_y_resolution
 
     def focal_length_mm(self):
-        units = self.get_item('XMP:PerspectiveFocalLengthUnits')
-        focal_length_mm = 0.0
-        if units == 'mm':
+        """Get focal length in millimeters."""
+        if self.get_item('XMP:PerspectiveFocalLengthUnits') == 'mm':
             focal_length_mm = float(self.get_item('XMP:PerspectiveFocalLength'))
         else:
             focal_length_px = float(self.get_item('XMP:PerspectiveFocalLength'))
@@ -258,34 +280,29 @@ class Metadata(object):
         return focal_length_mm
 
     def focal_length_35_mm_eq(self):
+        """Get 35 mm equivalent focal length."""
         return float(self.get_item('Composite:FocalLength35efl'))
 
-    def __float_or_zero(self, str):
-        if str is not None:
-            return float(str)
-        else:
-            return 0.0
-
     def irradiance_scale_factor(self):
-        ''' Get the calibration scale factor for the irradiance measurements in this image metadata.
-            Due to calibration differences between DLS1 and DLS2, we need to account for a scale factor
-            change in their respective units. This scale factor is pulled from the image metadata, or, if
-            the metadata doesn't give us the scale, we assume one based on a known combination of tags'''
+        """Get the calibration scale factor for the irradiance measurements from the image metadata.
+        Due to calibration differences between DLS1 and DLS2, we need to account for a scale factor change in their
+        respective units. This scale factor is pulled from the image metadata, or, if the metadata doesn't give us the
+        scale, we assume one based on a known combination of tags."""
         if self.get_item('XMP:IrradianceScaleToSIUnits') is not None:
-             # the metadata contains the scale
+            # the metadata contains the scale
             scale_factor = self.__float_or_zero(self.get_item('XMP:IrradianceScaleToSIUnits'))
-        elif self.get_item('XMP:HorizontalIrradiance') is not None: 
-            # DLS2 but the metadata is missing the scale, assume 0.01
+        elif self.get_item('XMP:HorizontalIrradiance') is not None:
+            # DLS2 but the metadata is missing the scale, assume 0.01. uW/cm^2/nm
             scale_factor = 0.01
         else:
             # DLS1, so we use a scale of 1
             scale_factor = 1.0
         return scale_factor
-    
+
     def horizontal_irradiance_valid(self):
-        ''' Defines if horizontal irradiance tag contains a value that can be trusted
-            some firmware versions had a bug whereby the direct and scattered irradiance were correct,
-            but the horizontal irradiance was calculated incorrectly '''
+        """Defines if horizontal irradiance tag contains a value that can be trusted. Some firmware versions had a bug
+        whereby the direct and scattered irradiance were correct, but the horizontal irradiance was calculated
+        incorrectly."""
         if self.get_item('XMP:HorizontalIrradiance') is None:
             return False
         from packaging import version
@@ -299,41 +316,41 @@ class Metadata(object):
         return version.parse(version_string) >= version.parse(good_version)
 
     def spectral_irradiance(self):
-        ''' Raw spectral irradiance measured by an irradiance sensor. 
-            Calibrated to W/m^2/nm using irradiance_scale_factor, but not corrected for angles '''
-        return self.__float_or_zero(self.get_item('XMP:SpectralIrradiance'))*self.irradiance_scale_factor()
+        """Raw spectral irradiance measured by an irradiance sensor. Calibrated to W/m^2/nm using
+        irradiance_scale_factor, but not corrected for angles."""
+        return self.__float_or_zero(self.get_item('XMP:SpectralIrradiance')) * self.irradiance_scale_factor()
 
     def horizontal_irradiance(self):
-        ''' Horizontal irradiance at the earth's surface below the DLS on the plane normal to the gravity
-            vector at the location (local flat plane spectral irradiance) '''
-        return self.__float_or_zero(self.get_item('XMP:HorizontalIrradiance'))*self.irradiance_scale_factor()
+        """Horizontal irradiance at the earth's surface below the DLS on the plane normal to the gravity vector at the
+        location (local flat plane spectral irradiance)."""
+        return self.__float_or_zero(self.get_item('XMP:HorizontalIrradiance')) * self.irradiance_scale_factor()
 
     def scattered_irradiance(self):
-        ''' scattered component of the spectral irradiance '''
-        return self.__float_or_zero(self.get_item('XMP:ScatteredIrradiance'))*self.irradiance_scale_factor()
+        """Scattered component of the spectral irradiance."""
+        return self.__float_or_zero(self.get_item('XMP:ScatteredIrradiance')) * self.irradiance_scale_factor()
 
     def direct_irradiance(self):
-        ''' direct component of the spectral irradiance on a ploane normal to the vector towards the sun '''
-        return self.__float_or_zero(self.get_item('XMP:DirectIrradiance'))*self.irradiance_scale_factor()
+        """Direct component of the spectral irradiance on a plane normal to the vector towards the sun."""
+        return self.__float_or_zero(self.get_item('XMP:DirectIrradiance')) * self.irradiance_scale_factor()
 
     def solar_azimuth(self):
-        ''' solar azimuth at the time of capture, as calculated by the camera system '''
+        """Solar azimuth at the time of capture, as calculated by the camera system."""
         return self.__float_or_zero(self.get_item('XMP:SolarAzimuth'))
 
     def solar_elevation(self):
-        ''' solar elevation at the time of capture, as calculated by the camera system '''
+        """Solar elevation at the time of capture, as calculated by the camera system."""
         return self.__float_or_zero(self.get_item('XMP:SolarElevation'))
 
     def estimated_direct_vector(self):
-        ''' estimated direct light vector relative to the DLS2 reference frame'''
+        """Estimated direct light vector relative to the DLS2 reference frame."""
         if self.get_item('XMP:EstimatedDirectLightVector') is not None:
             return [self.__float_or_zero(item) for item in self.get_item('XMP:EstimatedDirectLightVector')]
         else:
             return None
 
     def auto_calibration_image(self):
-        ''' True if this image is an auto-calibration image, where the camera has found and idetified
-            a calibration panel '''
+        """True if this image is an auto-calibration image, where the camera has found and identified a calibration
+        panel."""
         cal_tag = self.get_item('XMP:CalibrationPicture')
         return cal_tag is not None and \
                cal_tag == 2 and \
@@ -342,21 +359,33 @@ class Metadata(object):
                self.panel_serial() is not None
 
     def panel_albedo(self):
-        ''' Surface albedo of the active portion of the reflectance panel as calculated by the camera 
-            (usually from the informatoin in the panel QR code) '''
+        """Surface albedo of the active portion of the reflectance panel as calculated by the camera (usually from the
+        information in the panel QR code)."""
         albedo = self.get_item('XMP:Albedo')
         if albedo is not None:
             return self.__float_or_zero(albedo)
         return albedo
 
     def panel_region(self):
-        ''' A 4-tuple containing image x,y coordinates of the panel active area '''
+        """A 4-tuple containing image x,y coordinates of the panel active area."""
         if self.get_item('XMP:ReflectArea') is not None:
             coords = [int(item) for item in self.get_item('XMP:ReflectArea').split(',')]
             return list(zip(coords[0::2], coords[1::2]))
         else:
             return None
-    
+
     def panel_serial(self):
-        ''' The panel serial number as extracted from the image by the camera '''
+        """The panel serial number as extracted from the image by the camera."""
         return self.get_item('XMP:PanelSerial')
+
+    def get_gps_accuracy(self):
+        """Get GPS XY and GPS Z accuracy in meters."""
+        return self.get_item('XMP:GPSXYAccuracy'), self.get_item('XMP:GPSZAccuracy')
+
+    @staticmethod
+    def __float_or_zero(s):
+        if s is not None:
+            return float(s)
+        else:
+            return 0.0
+
